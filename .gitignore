@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+local.settings.json
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+.env.local
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Secrets
+*.pem
+*.pfx
+*.key
