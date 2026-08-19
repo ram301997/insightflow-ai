@@ -2,11 +2,6 @@ import json
 import re
 import azure.functions as func
 
-from app.db import get_kpis, get_top_products
-from app.schema import SEMANTIC_SCHEMA
-from app.dashboard import build_dashboard_action, get_dashboard_metadata
-from app.agent_service import ask_agent
-
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
 
@@ -24,11 +19,7 @@ def _json(data, status=200):
 
 
 def _parse_simple_intent(question: str):
-    """Safe MVP parser. It maps natural language to an allowlisted query.
-
-    Foundry is used for the narrative answer, while SQL execution remains
-    deterministic and parameterized in app/db.py.
-    """
+    """Safe MVP parser that maps natural language to an allowlisted query."""
     text = question.lower()
     state_map = {
         "florida": "Florida",
@@ -61,17 +52,27 @@ def health(req: func.HttpRequest) -> func.HttpResponse:
 
 @app.route(route="schema", methods=["GET"])
 def schema(req: func.HttpRequest) -> func.HttpResponse:
-    return _json(SEMANTIC_SCHEMA)
+    try:
+        from app.schema import SEMANTIC_SCHEMA
+        return _json(SEMANTIC_SCHEMA)
+    except Exception as exc:
+        return _json({"error": f"Schema module failed to load: {exc}"}, 500)
 
 
 @app.route(route="top-products", methods=["GET"])
 def top_products(req: func.HttpRequest) -> func.HttpResponse:
     try:
+        from app.db import get_top_products
+        from app.dashboard import build_dashboard_action
+
         state = req.params.get("state", "Florida")
         days = int(req.params.get("days", "90"))
         top = int(req.params.get("top", "5"))
         rows = get_top_products(state=state, days=days, top=top)
-        return _json({"data": rows, "dashboardAction": build_dashboard_action(page="product", state=state, days=days)})
+        return _json({
+            "data": rows,
+            "dashboardAction": build_dashboard_action(page="product", state=state, days=days),
+        })
     except Exception as exc:
         return _json({"error": str(exc)}, 500)
 
@@ -82,6 +83,9 @@ def chat(req: func.HttpRequest) -> func.HttpResponse:
         return _json({"ok": True})
 
     try:
+        from app.db import get_kpis, get_top_products
+        from app.dashboard import build_dashboard_action, get_dashboard_metadata
+
         body = req.get_json()
         question = (body.get("question") or "").strip()
         if not question:
@@ -103,6 +107,7 @@ def chat(req: func.HttpRequest) -> func.HttpResponse:
         )
 
         try:
+            from app.agent_service import ask_agent
             answer = ask_agent(prompt)
         except Exception:
             answer = "I retrieved the requested business data successfully. Review the returned metrics and dashboard update below."
