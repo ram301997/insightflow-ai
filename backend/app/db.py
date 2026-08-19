@@ -6,9 +6,10 @@ def _connection_string() -> str:
     server = os.environ["AZURE_SQL_SERVER"]
     database = os.environ["AZURE_SQL_DATABASE"]
 
-    # Azure-hosted Function App: use its managed identity.
-    # Local/browser VS Code development: use the signed-in Azure developer identity.
-    authentication = "ActiveDirectoryMsi" if os.getenv("WEBSITE_HOSTNAME") else "ActiveDirectoryDefault"
+    # Explicit auth mode avoids false environment detection in browser/Cloud Shell VS Code.
+    # Local development should set ActiveDirectoryDefault.
+    # Azure Function App can omit this setting and defaults to managed identity.
+    authentication = os.getenv("AZURE_SQL_AUTHENTICATION", "ActiveDirectoryMsi")
 
     return (
         "Driver={ODBC Driver 18 for SQL Server};"
