@@ -5,11 +5,16 @@ import pyodbc
 def _connection_string() -> str:
     server = os.environ["AZURE_SQL_SERVER"]
     database = os.environ["AZURE_SQL_DATABASE"]
+
+    # Azure-hosted Function App: use its managed identity.
+    # Local/browser VS Code development: use the signed-in Azure developer identity.
+    authentication = "ActiveDirectoryMsi" if os.getenv("WEBSITE_HOSTNAME") else "ActiveDirectoryDefault"
+
     return (
         "Driver={ODBC Driver 18 for SQL Server};"
         f"Server=tcp:{server},1433;"
         f"Database={database};"
-        "Authentication=ActiveDirectoryMsi;"
+        f"Authentication={authentication};"
         "Encrypt=yes;"
         "TrustServerCertificate=no;"
         "Connection Timeout=30;"
