@@ -19,6 +19,7 @@ jobs:
         with:
           submodules: true
           lfs: false
+
       - name: Build And Deploy
         id: builddeploy
         uses: Azure/static-web-apps-deploy@v1
@@ -29,6 +30,8 @@ jobs:
           app_location: "./frontend"
           api_location: ""
           output_location: "out"
+        env:
+          IS_STATIC_EXPORT: true
 
   close_pull_request_job:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
