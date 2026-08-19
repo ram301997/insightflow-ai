@@ -1,29 +1,46 @@
 import os
+import struct
 import pyodbc
+from azure.identity import DefaultAzureCredential
+
+SQL_COPT_SS_ACCESS_TOKEN = 1256
+SQL_TOKEN_SCOPE = "https://database.windows.net/.default"
 
 
-def _connection_string() -> str:
+def _base_connection_string() -> str:
     server = os.environ["AZURE_SQL_SERVER"]
     database = os.environ["AZURE_SQL_DATABASE"]
-
-    # Explicit auth mode avoids false environment detection in browser/Cloud Shell VS Code.
-    # Local development should set ActiveDirectoryDefault.
-    # Azure Function App can omit this setting and defaults to managed identity.
-    authentication = os.getenv("AZURE_SQL_AUTHENTICATION", "ActiveDirectoryMsi")
-
     return (
         "Driver={ODBC Driver 18 for SQL Server};"
         f"Server=tcp:{server},1433;"
         f"Database={database};"
-        f"Authentication={authentication};"
         "Encrypt=yes;"
         "TrustServerCertificate=no;"
         "Connection Timeout=30;"
     )
 
 
+def _token_struct() -> bytes:
+    credential = DefaultAzureCredential(exclude_interactive_browser_credential=False)
+    token = credential.get_token(SQL_TOKEN_SCOPE).token
+    token_bytes = token.encode("utf-16-le")
+    return struct.pack("<I", len(token_bytes)) + token_bytes
+
+
 def connect():
-    return pyodbc.connect(_connection_string())
+    conn_str = _base_connection_string()
+
+    # In Azure, the Function App uses its system-assigned managed identity.
+    # In local/browser VS Code, use the current Azure developer identity via an access token.
+    if os.getenv("WEBSITE_INSTANCE_ID") or os.getenv("FUNCTIONS_EXTENSION_VERSION") and os.getenv("WEBSITE_HOSTNAME"):
+        return pyodbc.connect(
+            conn_str + "Authentication=ActiveDirectoryMsi;",
+        )
+
+    return pyodbc.connect(
+        conn_str,
+        attrs_before={SQL_COPT_SS_ACCESS_TOKEN: _token_struct()},
+    )
 
 
 def rows_as_dicts(cursor):
@@ -35,7 +52,6 @@ def get_top_products(state: str, days: int = 90, top: int = 5):
     days = max(1, min(int(days), 730))
     top = max(1, min(int(top), 25))
 
-    # The table/column structure is fixed in application code. User values are parameters.
     sql = f"""
         SELECT TOP {top}
             p.ProductName,
