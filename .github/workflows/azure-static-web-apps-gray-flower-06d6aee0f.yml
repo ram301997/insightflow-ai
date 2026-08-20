@@ -32,6 +32,7 @@ jobs:
           output_location: "out"
         env:
           IS_STATIC_EXPORT: true
+          NEXT_PUBLIC_API_BASE_URL: "https://func-insightflow-api-learn-dhfvbmgwhkd7h3h8.eastus-01.azurewebsites.net/api"
 
   close_pull_request_job:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
