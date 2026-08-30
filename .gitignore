@@ -1,16 +1,9 @@
 # Python
 __pycache__/
 *.py[cod]
-.venv/
+.venv*/
 venv/
 .env
-local.settings.json
-
-# Node / Next.js
-node_modules/
-.next/
-out/
-.env.local
 
 # IDE / OS
 .vscode/
@@ -21,3 +14,6 @@ out/
 *.pem
 *.pfx
 *.key
+
+# Generated local demo database
+data/*.db

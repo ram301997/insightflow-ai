@@ -25,7 +25,8 @@ BEGIN
     CREATE TABLE dbo.DimCustomer (
         CustomerId INT PRIMARY KEY,
         CustomerName NVARCHAR(200) NOT NULL,
-        Segment NVARCHAR(100) NOT NULL
+        Segment NVARCHAR(100) NOT NULL,
+        Email NVARCHAR(200) NOT NULL
     );
 END;
 GO
