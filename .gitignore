@@ -14,6 +14,3 @@ venv/
 *.pem
 *.pfx
 *.key
-
-# Generated local demo database
-data/*.db

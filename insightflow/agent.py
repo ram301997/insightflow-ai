@@ -1,6 +1,5 @@
 import json
 import os
-import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -17,7 +16,6 @@ from insightflow.config import (
     foundry_ready,
     mcp_server_parameters,
     mcp_stdio_connection,
-    runtime_mode,
 )
 
 
@@ -203,123 +201,3 @@ async def ask_foundry_agent(question: str, history: list[BaseMessage] | None = N
         trace=_trace_from_messages(result_messages),
         rows=_last_query_rows(result_messages),
     )
-
-
-def _local_intent(question: str) -> dict[str, Any]:
-    text = question.lower()
-    states = ["Florida", "Texas", "New York", "California", "Illinois", "Georgia"]
-    state = next((name for name in states if name.lower() in text), None)
-    top_match = re.search(r"\btop\s+(\d+)\b", text)
-    days_match = re.search(r"(?:last|past)\s+(\d+)\s+days", text)
-    days = int(days_match.group(1)) if days_match else (90 if "quarter" in text else 365 if "year" in text else 90)
-    metric = "Profit" if "profit" in text else "Quantity" if "unit" in text else "Revenue"
-    sample_match = re.search(r"sample\s+(?:the\s+)?(?:data|rows)?\s*(?:of|from|for)?\s*(?:the\s+)?(\w+)", text)
-    return {
-        "state": state,
-        "top": max(1, min(int(top_match.group(1)) if top_match else 5, 20)),
-        "days": max(1, min(days, 730)),
-        "metric": metric,
-        "products": "product" in text,
-        "tables": "list tables" in text or "what tables" in text,
-        "relationships": "relationship" in text or "foreign key" in text,
-        "sample_table": sample_match.group(1) if sample_match else None,
-    }
-
-
-async def ask_local_agent(question: str) -> AgentAnswer:
-    """Deterministic MCP analyst used only for the self-contained local demo."""
-    intent = _local_intent(question)
-    trace: list[dict[str, Any]] = []
-    answer_rows: list[dict[str, Any]] | None = None
-
-    async def invoke(name: str, arguments: dict[str, Any] | None = None):
-        result = await call_mcp_tool(name, arguments or {})
-        trace.append({
-            "tool": name,
-            "arguments": arguments or {},
-            "result": json.dumps(result, default=str)[:5000],
-            "is_error": bool(isinstance(result, dict) and result.get("error")),
-        })
-        return result
-
-    if intent["tables"]:
-        result = await invoke("list_tables")
-        names = [row["ObjectName"] for row in result.get("data", [])]
-        text = "The demo database contains: " + ", ".join(f"`{name}`" for name in names) + "."
-    elif intent["sample_table"]:
-        tables_result = await invoke("list_tables")
-        available = [row["ObjectName"] for row in tables_result.get("data", [])]
-        match = next((name for name in available if name.lower() == intent["sample_table"].lower()), None)
-        if not match:
-            text = (
-                f"I don't recognize a table named `{intent['sample_table']}`. "
-                "Available tables: " + ", ".join(f"`{name}`" for name in available) + "."
-            )
-        else:
-            result = await invoke("sample_rows", {"schema": "main", "table": match, "limit": 5})
-            answer_rows = result.get("data") or None
-            text = f"Sample rows from `{match}`:"
-    elif intent["relationships"]:
-        result = await invoke("get_relationships", {"schema": "main"})
-        rows = result.get("data", [])
-        text = f"I found {len(rows)} foreign-key relationships in the demo star schema."
-    elif intent["products"]:
-        state_filter = f"AND s.State = '{intent['state']}'" if intent["state"] else ""
-        aggregate = "SUM(fs.Quantity)" if intent["metric"] == "Quantity" else f"SUM(fs.{intent['metric']})"
-        alias = "UnitsSold" if intent["metric"] == "Quantity" else f"Total{intent['metric']}"
-        query = f"""
-            SELECT p.ProductName, ROUND({aggregate}, 2) AS {alias}
-            FROM FactSales fs
-            JOIN DimProduct p ON p.ProductId = fs.ProductId
-            JOIN DimStore s ON s.StoreId = fs.StoreId
-            JOIN DimDate d ON d.DateId = fs.DateId
-            WHERE date(d.FullDate) >= date('now', '-{intent['days']} days')
-              {state_filter}
-            GROUP BY p.ProductName
-            ORDER BY {alias} DESC
-            LIMIT {intent['top']}
-        """
-        result = await invoke("execute_readonly_query", {"query": query})
-        rows = result.get("data", [])
-        answer_rows = rows
-        scope = f" in {intent['state']}" if intent["state"] else ""
-        lines = [f"Top {len(rows)} products by {intent['metric'].lower()}{scope} for the last {intent['days']} days:"]
-        for index, row in enumerate(rows, 1):
-            value = row[alias]
-            formatted = f"${value:,.2f}" if intent["metric"] != "Quantity" else f"{int(value):,} units"
-            lines.append(f"{index}. **{row['ProductName']}** — {formatted}")
-        text = "\n\n".join(lines)
-    else:
-        state_filter = f"AND s.State = '{intent['state']}'" if intent["state"] else ""
-        query = f"""
-            SELECT ROUND(SUM(fs.Revenue), 2) AS TotalRevenue,
-                   ROUND(SUM(fs.Profit), 2) AS TotalProfit,
-                   SUM(fs.Quantity) AS UnitsSold,
-                   COUNT(DISTINCT fs.SaleId) AS TotalOrders,
-                   COUNT(DISTINCT fs.CustomerId) AS TotalCustomers
-            FROM FactSales fs
-            JOIN DimStore s ON s.StoreId = fs.StoreId
-            JOIN DimDate d ON d.DateId = fs.DateId
-            WHERE date(d.FullDate) >= date('now', '-{intent['days']} days')
-              {state_filter}
-        """
-        result = await invoke("execute_readonly_query", {"query": query})
-        answer_rows = result.get("data") or None
-        row = (answer_rows or [{}])[0]
-        scope = f" for {intent['state']}" if intent["state"] else ""
-        text = (
-            f"For the last {intent['days']} days{scope}:\n\n"
-            f"- **Revenue:** ${float(row.get('TotalRevenue') or 0):,.2f}\n"
-            f"- **Profit:** ${float(row.get('TotalProfit') or 0):,.2f}\n"
-            f"- **Units:** {int(row.get('UnitsSold') or 0):,}\n"
-            f"- **Orders:** {int(row.get('TotalOrders') or 0):,}\n"
-            f"- **Customers:** {int(row.get('TotalCustomers') or 0):,}"
-        )
-
-    return AgentAnswer(text=text, trace=trace, rows=answer_rows)
-
-
-async def ask_agent(question: str, history: list[BaseMessage] | None = None) -> AgentAnswer:
-    if runtime_mode() == "azure":
-        return await ask_foundry_agent(question, history=history)
-    return await ask_local_agent(question)

@@ -9,7 +9,6 @@ from insightflow.sql import (
     connect,
     is_column_blocked,
     rows_as_dicts,
-    using_sqlite,
     validate_identifier,
     validate_readonly_sql,
 )
@@ -56,19 +55,6 @@ def safe_tool(function):
 @safe_tool
 def list_tables(schema: str | None = None) -> str:
     """List user tables and views, optionally filtered to one schema."""
-    if using_sqlite():
-        sql = """
-            SELECT 'main' AS SchemaName, name AS ObjectName,
-                   CASE type WHEN 'table' THEN 'TABLE' ELSE 'VIEW' END AS ObjectType
-            FROM sqlite_master
-            WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' AND name <> 'AppMetadata'
-            ORDER BY name
-        """
-        with connect() as connection:
-            cursor = _cursor(connection)
-            cursor.execute(sql)
-            rows, _ = rows_as_dicts(cursor)
-        return _result(rows, count=len(rows), backend="sqlite-demo")
     sql = """
         SELECT s.name AS SchemaName, o.name AS ObjectName,
                CASE o.type WHEN 'U' THEN 'TABLE' ELSE 'VIEW' END AS ObjectType
@@ -91,29 +77,6 @@ def get_table_schema(table: str, schema: str = "dbo") -> str:
     """Return columns, SQL data types, nullability, defaults, and key participation."""
     validate_identifier(schema, "schema")
     validate_identifier(table, "table")
-    if using_sqlite():
-        with connect() as connection:
-            cursor = _cursor(connection)
-            cursor.execute(f"PRAGMA table_info([{table}])")
-            raw = cursor.fetchall()
-        rows = [
-            {
-                "Ordinal": row[0] + 1,
-                "ColumnName": row[1],
-                "DataType": row[2],
-                "MaxLength": None,
-                "NumericPrecision": None,
-                "NumericScale": None,
-                "IsNullable": not bool(row[3]),
-                "DefaultValue": row[4],
-                "IsPrimaryKey": bool(row[5]),
-            }
-            for row in raw
-        ]
-        if not rows:
-            raise ValueError(f"Table or view not found: {table}")
-        rows = [row for row in rows if not is_column_blocked(row["ColumnName"], table)]
-        return _result(rows, schema="main", table=table, backend="sqlite-demo")
     sql = """
         SELECT c.column_id AS Ordinal, c.name AS ColumnName, t.name AS DataType,
                CASE WHEN t.name IN ('nvarchar','nchar') AND c.max_length > 0 THEN c.max_length / 2
@@ -150,23 +113,6 @@ def get_table_schema(table: str, schema: str = "dbo") -> str:
 def get_relationships(schema: str = "dbo") -> str:
     """List foreign-key relationships for tables in a schema."""
     validate_identifier(schema, "schema")
-    if using_sqlite():
-        with connect() as connection:
-            tables = [
-                row[0] for row in connection.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-                ).fetchall()
-            ]
-            rows = []
-            for table in tables:
-                validate_identifier(table, "table")
-                for fk in connection.execute(f"PRAGMA foreign_key_list([{table}])").fetchall():
-                    rows.append({
-                        "ConstraintName": f"FK_{table}_{fk[3]}",
-                        "ParentSchema": "main", "ParentTable": table, "ParentColumn": fk[3],
-                        "ReferencedSchema": "main", "ReferencedTable": fk[2], "ReferencedColumn": fk[4],
-                    })
-        return _result(rows, count=len(rows), backend="sqlite-demo")
     sql = """
         SELECT fk.name AS ConstraintName,
                ps.name AS ParentSchema, pt.name AS ParentTable, pc.name AS ParentColumn,
@@ -191,22 +137,18 @@ def get_relationships(schema: str = "dbo") -> str:
 
 def _visible_column_names(connection, schema: str, table: str) -> list[str]:
     """All column names on a table, minus any blocked by SENSITIVE_COLUMNS."""
-    if using_sqlite():
-        cursor = connection.execute(f"PRAGMA table_info([{table}])")
-        names = [row[1] for row in cursor.fetchall()]
-    else:
-        cursor = connection.cursor()
-        cursor.execute(
-            """
-            SELECT c.name FROM sys.columns c
-            JOIN sys.objects o ON c.object_id = o.object_id
-            JOIN sys.schemas s ON o.schema_id = s.schema_id
-            WHERE s.name = ? AND o.name = ?
-            ORDER BY c.column_id
-            """,
-            schema, table,
-        )
-        names = [row[0] for row in cursor.fetchall()]
+    cursor = connection.cursor()
+    cursor.execute(
+        """
+        SELECT c.name FROM sys.columns c
+        JOIN sys.objects o ON c.object_id = o.object_id
+        JOIN sys.schemas s ON o.schema_id = s.schema_id
+        WHERE s.name = ? AND o.name = ?
+        ORDER BY c.column_id
+        """,
+        schema, table,
+    )
+    names = [row[0] for row in cursor.fetchall()]
     if not names:
         raise ValueError(f"Table or view not found: {table}")
     return [name for name in names if not is_column_blocked(name, table)]
@@ -224,11 +166,7 @@ def sample_rows(table: str, schema: str = "dbo", limit: int = 5) -> str:
         if not columns:
             raise ValueError(f"No visible columns on {table} — every column is restricted")
         column_list = ", ".join(f"[{name}]" for name in columns)
-        sql = (
-            f"SELECT {column_list} FROM [{table}] LIMIT {limit}"
-            if using_sqlite()
-            else f"SELECT TOP ({limit}) {column_list} FROM [{schema}].[{table}]"
-        )
+        sql = f"SELECT TOP ({limit}) {column_list} FROM [{schema}].[{table}]"
         cursor = _cursor(connection)
         cursor.execute(sql)
         rows, truncated = rows_as_dicts(cursor, limit)

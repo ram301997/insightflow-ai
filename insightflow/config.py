@@ -10,9 +10,6 @@ load_dotenv(ROOT / ".env")
 
 
 AZURE_ENV_KEYS = (
-    "APP_MODE",
-    "INSIGHTFLOW_DATABASE_BACKEND",
-    "SQLITE_DATABASE_PATH",
     "AZURE_SQL_SERVER",
     "AZURE_SQL_DATABASE",
     "AZURE_SQL_USERNAME",
@@ -57,17 +54,6 @@ def azure_sql_ready() -> bool:
     return target and driver and (sql_login or service_identity_ready())
 
 
-def runtime_mode() -> str:
-    requested = os.getenv("APP_MODE", "auto").strip().lower()
-    if requested not in {"auto", "demo", "azure"}:
-        raise RuntimeError("APP_MODE must be auto, demo, or azure")
-    if requested == "azure":
-        return "azure"
-    if requested == "demo":
-        return "demo"
-    return "azure" if azure_sql_ready() and foundry_ready() else "demo"
-
-
 def require(*names: str) -> None:
     missing = [name for name in names if not os.getenv(name)]
     if missing:
@@ -94,15 +80,13 @@ def azure_credential():
 def _mcp_child_env() -> dict[str, str]:
     """Explicitly pass only required values to the MCP server subprocess."""
     child_env = {key: os.environ[key] for key in AZURE_ENV_KEYS if os.getenv(key)}
-    child_env["INSIGHTFLOW_DATABASE_BACKEND"] = "azure_sql" if runtime_mode() == "azure" else "sqlite"
-    child_env.setdefault("SQLITE_DATABASE_PATH", str(ROOT / "data" / "insightflow-demo.db"))
     child_env["PATH"] = os.environ.get("PATH", "")
     child_env["PYTHONPATH"] = str(ROOT)
     return child_env
 
 
 def mcp_server_parameters():
-    """Stdio settings for the raw MCP client (database explorer, demo analyst)."""
+    """Stdio settings for the raw MCP client (database explorer)."""
     from mcp import StdioServerParameters
 
     return StdioServerParameters(

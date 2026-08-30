@@ -1,6 +1,6 @@
 # InsightFlow AI
 
-A text-to-SQL business-intelligence agent: ask a question in plain English, and it converts the question to SQL, runs it read-only against the database, and answers in text. Built with a LangChain tool-calling agent on Microsoft Foundry, backed by an MCP server that owns all schema discovery and query execution. It runs immediately in a self-contained demo mode, then switches to Microsoft Foundry and Azure SQL when production configuration is ready. There is no Next.js, FastAPI, Azure Functions, or interactive end-user sign-in.
+A text-to-SQL business-intelligence agent: ask a question in plain English, and it converts the question to SQL, runs it read-only against Azure SQL, and answers in text. Built with a LangChain tool-calling agent on Microsoft Foundry, backed by an MCP server that owns all schema discovery and query execution. There is no Next.js, FastAPI, Azure Functions, or interactive end-user sign-in — and no fallback mode: the app requires real Azure SQL and Foundry configuration to run at all.
 
 ## Run it now
 
@@ -8,7 +8,7 @@ A text-to-SQL business-intelligence agent: ask a question in plain English, and 
 .venv/bin/streamlit run streamlit_app.py
 ```
 
-Open `http://localhost:8501`. With the default `APP_MODE=auto`, incomplete Azure configuration selects demo mode automatically. Demo mode creates a deterministic 5,000-row SQLite star schema in `data/`, exposes it through the same MCP tools, and uses a local deterministic BI analyst for chat. It does not pretend that demo results came from Azure.
+Open `http://localhost:8501`. See [Configuration](#configuration) below to set up Azure SQL and Foundry first — without it, the app starts but chat and the dashboard stay disabled, with the sidebar's "System status" showing exactly what's missing.
 
 ## Architecture
 
@@ -17,7 +17,7 @@ Streamlit UI
     |
     | user question + chat history
     v
-LangChain tool-calling agent (Foundry model) or local demo analyst
+LangChain tool-calling agent (Foundry model)
     |
     | tool calls, using MCP-discovered JSON schemas (langchain-mcp-adapters)
     v
@@ -25,18 +25,10 @@ InsightFlow MCP server (stdio subprocess)
     |
     | metadata calls, or one SQLGlot-validated SELECT/WITH
     v
-Azure SQL or demo SQLite
+Azure SQL
 ```
 
-The model has no database credentials and cannot connect directly to SQL. The agent writes SQL as part of its own reasoning (`list_tables` / `get_table_schema` / `get_relationships` to learn the schema, `execute_readonly_query` to run it), but the MCP server is what actually owns database access and enforces validation, timeouts, result limits, identifier checks, and read-only behavior. Both runtime modes use the same MCP interface, so the guardrails apply identically whether the caller is the LangChain agent or the deterministic demo analyst.
-
-## Runtime modes
-
-| `APP_MODE` | Behavior |
-|---|---|
-| `auto` | Uses Azure only when SQL, ODBC, Foundry, and service identity are all ready; otherwise uses demo mode. |
-| `demo` | Always uses seeded SQLite and the deterministic local MCP analyst. No credentials are needed. |
-| `azure` | Requires Foundry, Azure SQL, Driver 18, and unattended credentials; configuration failures are surfaced immediately. |
+The model has no database credentials and cannot connect directly to SQL. The agent writes SQL as part of its own reasoning (`list_tables` / `get_table_schema` / `get_relationships` to learn the schema, `execute_readonly_query` to run it), but the MCP server is what actually owns database access and enforces validation, timeouts, result limits, identifier checks, and read-only behavior.
 
 ## MCP tools
 
@@ -66,11 +58,10 @@ For production, run Streamlit and the MCP server under managed identity in Azure
 
 ```text
 streamlit_app.py             Streamlit chat, readiness UI, and database explorer
-insightflow/agent.py         LangChain tool-calling agent (Foundry model + MCP tools) and demo analyst
+insightflow/agent.py         LangChain tool-calling agent (Foundry model + MCP tools)
 insightflow/mcp_server.py    MCP server: schema discovery and guarded SQL execution
 insightflow/sql.py           connection, serialization, and SQL guardrails
 insightflow/config.py        environment loading and MCP subprocess/stdio config
-insightflow/demo_db.py       deterministic local star-schema generator
 database/schema.sql          Azure SQL star schema
 database/seed.sql            deterministic sample data
 tests/test_sql_guard.py      SQL safety tests
@@ -78,9 +69,9 @@ tests/test_sql_guard.py      SQL safety tests
 
 ## Layout
 
-The app is three tabs: **Chat**, **Dashboard**, and **MCP Explorer**. The sidebar holds mode
-status and "New conversation" — schema browsing lives in its own tab instead of cluttering the
-sidebar.
+The app is three tabs: **Chat**, **Dashboard**, and **MCP Explorer**. The sidebar shows a
+connection status pill and "New conversation" — schema browsing lives in its own tab instead of
+cluttering the sidebar.
 
 ## Dashboards
 
@@ -88,9 +79,8 @@ Two independent visualizations:
 
 - **Dashboard tab**: a standing overview — KPI tiles (revenue, profit, units, orders, customers),
   top products by revenue, revenue by state, and a monthly revenue trend — computed directly from
-  fixed queries (`_dashboard_queries()` in `streamlit_app.py`, cached 5 minutes via
-  `st.cache_data`) independent of chat. The query text differs between demo (SQLite) and Azure
-  (T-SQL) syntax but returns the same shape either way.
+  fixed queries (`DASHBOARD_QUERIES` in `streamlit_app.py`, cached 5 minutes via `st.cache_data`)
+  independent of chat.
 - **Chat tab**: every answer also visualizes the result of its last `execute_readonly_query` call,
   chosen automatically by shape:
 
@@ -103,7 +93,7 @@ Two independent visualizations:
   The raw rows are always available underneath in a "Result data" expander. Implemented in
   `AgentAnswer.rows` (`insightflow/agent.py`) and `render_result_view()` (`streamlit_app.py`).
 
-## Azure-mode prerequisites
+## Prerequisites
 
 - Native Python 3.11+
 - Microsoft ODBC Driver 18 for SQL Server
@@ -122,7 +112,7 @@ Expected values are `arm64` and `ODBC Driver 18 for SQL Server`.
 
 ## Configuration
 
-Demo mode requires no configuration. For Azure mode, create the local configuration:
+Create the local configuration:
 
 ```bash
 cp .env.example .env

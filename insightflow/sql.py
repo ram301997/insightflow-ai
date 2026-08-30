@@ -1,6 +1,5 @@
 import os
 import re
-import sqlite3
 import struct
 from decimal import Decimal
 from typing import Any
@@ -10,7 +9,6 @@ import sqlglot
 from sqlglot import expressions as exp
 
 from insightflow.config import azure_credential, require
-from insightflow.demo_db import setup_demo_database
 
 
 SQL_COPT_SS_ACCESS_TOKEN = 1256
@@ -38,11 +36,6 @@ def _token_struct() -> bytes:
 
 def connect():
     """Connect using SQL credentials when supplied, otherwise non-interactive Entra ID."""
-    if os.getenv("INSIGHTFLOW_DATABASE_BACKEND", "azure_sql") == "sqlite":
-        path = setup_demo_database()
-        connection = sqlite3.connect(path)
-        connection.execute("PRAGMA foreign_keys = ON")
-        return connection
     connection_string = _base_connection_string()
     username = os.getenv("AZURE_SQL_USERNAME")
     password = os.getenv("AZURE_SQL_PASSWORD")
@@ -56,10 +49,6 @@ def connect():
         connection_string,
         attrs_before={SQL_COPT_SS_ACCESS_TOKEN: _token_struct()},
     )
-
-
-def using_sqlite() -> bool:
-    return os.getenv("INSIGHTFLOW_DATABASE_BACKEND", "azure_sql") == "sqlite"
 
 
 def _json_value(value: Any):

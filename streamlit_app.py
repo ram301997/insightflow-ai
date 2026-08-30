@@ -7,9 +7,8 @@ import pyodbc
 import streamlit as st
 from langchain_core.messages import AIMessage, HumanMessage
 
-from insightflow.agent import ask_agent, call_mcp_tool, discover_tools
-from insightflow.config import foundry_api_key_ready, runtime_mode
-from insightflow.demo_db import setup_demo_database
+from insightflow.agent import ask_foundry_agent, call_mcp_tool, discover_tools
+from insightflow.config import foundry_api_key_ready
 
 
 st.set_page_config(page_title="InsightFlow AI", page_icon="📊", layout="wide")
@@ -185,22 +184,18 @@ def configured(name: str) -> bool:
     return bool(value) and "YOUR" not in value.upper()
 
 
-mode = runtime_mode()
-if mode == "demo":
-    setup_demo_database()
-
 driver_ready = "ODBC Driver 18 for SQL Server" in pyodbc.drivers()
 sql_target_ready = configured("AZURE_SQL_SERVER") and configured("AZURE_SQL_DATABASE")
 service_identity_ready = all(
     configured(name) for name in ("AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET")
 )
 sql_login_ready = configured("AZURE_SQL_USERNAME") and configured("AZURE_SQL_PASSWORD")
-sql_ready = mode == "demo" or (driver_ready and sql_target_ready and (service_identity_ready or sql_login_ready))
+sql_ready = driver_ready and sql_target_ready and (service_identity_ready or sql_login_ready)
 foundry_key_ready = foundry_api_key_ready()
 foundry_ready = configured("FOUNDRY_MODEL") and (
     foundry_key_ready or (configured("FOUNDRY_PROJECT_ENDPOINT") and service_identity_ready)
 )
-agent_ready = mode == "demo" or (sql_ready and foundry_ready)
+agent_ready = sql_ready and foundry_ready
 
 
 def run(coro):
@@ -288,63 +283,36 @@ def friendly_error(exc: Exception) -> str:
     return message
 
 
-def _dashboard_queries(current_mode: str) -> dict[str, str]:
-    """Fixed overview queries. Demo (SQLite) and Azure (T-SQL) need different syntax for the same result."""
-    if current_mode == "demo":
-        return {
-            "kpis": """
-                SELECT ROUND(SUM(Revenue),2) AS TotalRevenue, ROUND(SUM(Profit),2) AS TotalProfit,
-                       SUM(Quantity) AS TotalUnits, COUNT(DISTINCT SaleId) AS TotalOrders,
-                       COUNT(DISTINCT CustomerId) AS TotalCustomers
-                FROM FactSales
-            """,
-            "top_products": """
-                SELECT p.ProductName, ROUND(SUM(fs.Revenue),2) AS Revenue
-                FROM FactSales fs JOIN DimProduct p ON p.ProductId = fs.ProductId
-                GROUP BY p.ProductName ORDER BY Revenue DESC LIMIT 5
-            """,
-            "by_state": """
-                SELECT s.State, ROUND(SUM(fs.Revenue),2) AS Revenue
-                FROM FactSales fs JOIN DimStore s ON s.StoreId = fs.StoreId
-                GROUP BY s.State ORDER BY Revenue DESC
-            """,
-            "trend": """
-                SELECT d.YearNumber || '-' || substr('00' || d.MonthNumber, -2, 2) AS Month,
-                       ROUND(SUM(fs.Revenue),2) AS Revenue
-                FROM FactSales fs JOIN DimDate d ON d.DateId = fs.DateId
-                GROUP BY d.YearNumber, d.MonthNumber ORDER BY d.YearNumber, d.MonthNumber
-            """,
-        }
-    return {
-        "kpis": """
-            SELECT ROUND(SUM(Revenue),2) AS TotalRevenue, ROUND(SUM(Profit),2) AS TotalProfit,
-                   SUM(Quantity) AS TotalUnits, COUNT(DISTINCT SaleId) AS TotalOrders,
-                   COUNT(DISTINCT CustomerId) AS TotalCustomers
-            FROM dbo.FactSales
-        """,
-        "top_products": """
-            SELECT TOP 5 p.ProductName, ROUND(SUM(fs.Revenue),2) AS Revenue
-            FROM dbo.FactSales fs JOIN dbo.DimProduct p ON p.ProductId = fs.ProductId
-            GROUP BY p.ProductName ORDER BY Revenue DESC
-        """,
-        "by_state": """
-            SELECT s.State, ROUND(SUM(fs.Revenue),2) AS Revenue
-            FROM dbo.FactSales fs JOIN dbo.DimStore s ON s.StoreId = fs.StoreId
-            GROUP BY s.State ORDER BY Revenue DESC
-        """,
-        "trend": """
-            SELECT CONCAT(d.YearNumber, '-', RIGHT('0' + CAST(d.MonthNumber AS VARCHAR(2)), 2)) AS Month,
-                   ROUND(SUM(fs.Revenue),2) AS Revenue
-            FROM dbo.FactSales fs JOIN dbo.DimDate d ON d.DateId = fs.DateId
-            GROUP BY d.YearNumber, d.MonthNumber ORDER BY d.YearNumber, d.MonthNumber
-        """,
-    }
+DASHBOARD_QUERIES = {
+    "kpis": """
+        SELECT ROUND(SUM(Revenue),2) AS TotalRevenue, ROUND(SUM(Profit),2) AS TotalProfit,
+               SUM(Quantity) AS TotalUnits, COUNT(DISTINCT SaleId) AS TotalOrders,
+               COUNT(DISTINCT CustomerId) AS TotalCustomers
+        FROM dbo.FactSales
+    """,
+    "top_products": """
+        SELECT TOP 5 p.ProductName, ROUND(SUM(fs.Revenue),2) AS Revenue
+        FROM dbo.FactSales fs JOIN dbo.DimProduct p ON p.ProductId = fs.ProductId
+        GROUP BY p.ProductName ORDER BY Revenue DESC
+    """,
+    "by_state": """
+        SELECT s.State, ROUND(SUM(fs.Revenue),2) AS Revenue
+        FROM dbo.FactSales fs JOIN dbo.DimStore s ON s.StoreId = fs.StoreId
+        GROUP BY s.State ORDER BY Revenue DESC
+    """,
+    "trend": """
+        SELECT CONCAT(d.YearNumber, '-', RIGHT('0' + CAST(d.MonthNumber AS VARCHAR(2)), 2)) AS Month,
+               ROUND(SUM(fs.Revenue),2) AS Revenue
+        FROM dbo.FactSales fs JOIN dbo.DimDate d ON d.DateId = fs.DateId
+        GROUP BY d.YearNumber, d.MonthNumber ORDER BY d.YearNumber, d.MonthNumber
+    """,
+}
 
 
 @st.cache_data(ttl=300, show_spinner="Loading dashboard…")
-def load_dashboard(current_mode: str) -> dict[str, list[dict]]:
+def load_dashboard() -> dict[str, list[dict]]:
     data = {}
-    for name, query in _dashboard_queries(current_mode).items():
+    for name, query in DASHBOARD_QUERIES.items():
         result = run(call_mcp_tool("execute_readonly_query", {"query": query}))
         data[name] = result.get("data", [])
     return data
@@ -370,11 +338,13 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-    status_label = "Demo mode" if mode == "demo" else "Azure mode"
+    status_label = "Connected to Azure SQL" if agent_ready else "Setup needed"
+    status_color = "#1a7f4f" if agent_ready else "#b45309"
+    status_bg = "rgba(26,127,79,0.1)" if agent_ready else "rgba(180,83,9,0.1)"
     st.markdown(
         f"""
-        <div style="display:inline-flex; align-items:center; gap:0.4rem; background:rgba(99,102,241,0.1);
-                    color:#4338CA; font-weight:600; font-size:0.78rem; padding:0.3rem 0.7rem;
+        <div style="display:inline-flex; align-items:center; gap:0.4rem; background:{status_bg};
+                    color:{status_color}; font-weight:600; font-size:0.78rem; padding:0.3rem 0.7rem;
                     border-radius:999px; margin-bottom:1.1rem;">
             ● {status_label}
         </div>
@@ -432,11 +402,11 @@ with tab_chat:
 
     clicked_example = None
     if not st.session_state.messages and agent_ready:
-        example_questions = (
-            ["Top 5 products by revenue", "How is business doing in the last 30 days?", "Sample data from FactSales", "List tables and views"]
-            if mode == "demo"
-            else ["Top 5 products by profit in Florida this quarter", "Which products have the thinnest margins?", "Revenue by state this year"]
-        )
+        example_questions = [
+            "Top 5 products by profit in Florida this quarter",
+            "Which products have the thinnest margins?",
+            "Revenue by state this year",
+        ]
         st.caption("Try one of these, or ask your own:")
         example_cols = st.columns(len(example_questions))
         for col, example in zip(example_cols, example_questions):
@@ -473,7 +443,7 @@ with tab_chat:
             error_message = None
             with st.status("Inspecting Azure SQL through MCP…", expanded=True) as status:
                 try:
-                    answer = run(ask_agent(question, history=history))
+                    answer = run(ask_foundry_agent(question, history=history))
                     status.update(label="Analysis complete", state="complete", expanded=False)
                 except Exception as exc:
                     status.update(label="Request failed", state="error", expanded=False)
@@ -498,10 +468,10 @@ with tab_chat:
 
 with tab_dashboard:
     if not sql_ready:
-        st.info("Connect a database (demo mode works with no setup) to see the overview.")
+        st.info("Configure Azure SQL credentials in .env to see the overview — see the sidebar's System status.")
     else:
         try:
-            dashboard_data = load_dashboard(mode)
+            dashboard_data = load_dashboard()
         except Exception as exc:
             dashboard_data = None
             st.error(friendly_error(exc))
@@ -554,7 +524,7 @@ with tab_dashboard:
 with tab_explorer:
     st.caption("Inspect the live schema directly through the same MCP tools the agent uses.")
 
-    schema_name = st.text_input("Schema", value=("main" if mode == "demo" else "dbo"))
+    schema_name = st.text_input("Schema", value="dbo")
 
     explorer_cols = st.columns(2)
     with explorer_cols[0]:
