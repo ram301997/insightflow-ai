@@ -36,7 +36,10 @@ Operating rules:
 - After a query that returns a worthwhile result, call suggest_visualization exactly once, choosing
   the chart type from what the question is actually asking (a trend over time vs. comparing
   categories vs. a single headline number) rather than just the data's shape. Skip it if the result
-  is empty or a chart wouldn't clarify anything.
+  is empty or a chart wouldn't clarify anything. If the result has three relevant dimensions — a
+  category broken down BY a time or ordinal axis (e.g. revenue by state by quarter) — pass that
+  category as series_column so each becomes its own line/bar-group; do not let a category collapse
+  into one aggregated bar just because the chart type only takes one x/y pair.
 - State the time range and filters used. Distinguish revenue, profit, orders, units, and customers.
 - If the database cannot answer the question, say what is missing instead of guessing.
 - Answer in plain text: a concise executive answer first, then key supporting numbers and any caveat.
@@ -60,6 +63,7 @@ def suggest_visualization(
     chart_type: Literal["bar", "line", "metric", "table"],
     x_column: Optional[str] = None,
     y_column: Optional[str] = None,
+    series_column: Optional[str] = None,
     title: Optional[str] = None,
 ) -> str:
     """Record how the last query's result should be visualized in the UI.
@@ -70,8 +74,12 @@ def suggest_visualization(
     - "line": a trend over time (a monthly/quarterly/yearly series).
     - "metric": a single headline number (one row, one key figure).
     - "table": a list of records, or anything a chart wouldn't clarify.
-    x_column and y_column must be exact column names from the query's SELECT list. This tool has no
-    effect on the data itself — it only tells the UI how to render what you already fetched.
+    x_column and y_column must be exact column names from the query's SELECT list.
+    Set series_column when the result has THREE relevant dimensions — a category, an x-axis, and a
+    value (e.g. revenue by state BY quarter) — so each distinct value in series_column becomes its
+    own line/bar-group across x_column, instead of collapsing that category into one aggregated bar.
+    Leave it unset for a plain single-series chart. This tool has no effect on the data itself — it
+    only tells the UI how to render what you already fetched.
     """
     return "Visualization noted."
 

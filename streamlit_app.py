@@ -256,6 +256,9 @@ def _valid_chart_spec(spec: dict | None, df: pd.DataFrame) -> dict | None:
             return None
         if not pd.api.types.is_numeric_dtype(df[y_column]):
             return None
+        series_column = spec.get("series_column")
+        if series_column and series_column not in df.columns:
+            return None
     elif chart_type == "metric":
         numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and not _is_id_column(c)]
         if len(df) != 1 or not numeric_cols:
@@ -284,6 +287,19 @@ def render_result_view(rows: list[dict] | None, chart_spec: dict | None = None) 
                 st.dataframe(df, width="stretch", hide_index=True)
         elif chart_type == "table":
             st.dataframe(df, width="stretch", hide_index=True)
+        elif spec.get("series_column"):
+            # Three relevant dimensions (a category broken down by an x-axis) — pivot to one column
+            # per series so Streamlit draws a real line/group per category instead of one aggregated
+            # bar. No forced single color here: the point is telling the series apart.
+            x_column, y_column, series_column = spec["x_column"], spec["y_column"], spec["series_column"]
+            pivoted = df.pivot_table(index=x_column, columns=series_column, values=y_column, aggfunc="sum")
+            pivoted = pivoted.sort_index()
+            if chart_type == "line":
+                st.line_chart(pivoted)
+            else:
+                st.bar_chart(pivoted)
+            with st.expander("Result data"):
+                st.dataframe(df, width="stretch", hide_index=True)
         else:
             x_column, y_column = spec["x_column"], spec["y_column"]
             if chart_type == "line":
