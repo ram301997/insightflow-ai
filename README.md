@@ -176,6 +176,50 @@ Open `http://localhost:8501`. Streamlit launches the MCP server automatically ov
 .venv/bin/python -c "import asyncio; from insightflow.agent import discover_tools; print(asyncio.run(discover_tools()))"
 ```
 
+## Deploy to Azure
+
+Containerized with `Dockerfile` (Python 3.11 + Microsoft ODBC Driver 18, runs Streamlit on port
+8501). Deployed to **Azure Container Apps**, which builds directly from source — no local Docker
+required — and scales to zero when idle.
+
+```bash
+az login
+
+az group create --name rg-insightflow --location eastus2
+
+az containerapp up \
+  --name insightflow-ai \
+  --resource-group rg-insightflow \
+  --location eastus2 \
+  --source . \
+  --ingress external \
+  --target-port 8501
+```
+
+Then set the same values from `.env` as secrets/env vars (never bake `.env` into the image —
+`.dockerignore` already excludes it):
+
+```bash
+az containerapp secret set \
+  --name insightflow-ai --resource-group rg-insightflow \
+  --secrets sql-password="<AZURE_SQL_PASSWORD>" openai-key="<AZURE_OPENAI_API_KEY>"
+
+az containerapp update \
+  --name insightflow-ai --resource-group rg-insightflow \
+  --set-env-vars \
+    AZURE_SQL_SERVER="<value>" \
+    AZURE_SQL_DATABASE="<value>" \
+    AZURE_SQL_USERNAME="<value>" \
+    AZURE_SQL_PASSWORD=secretref:sql-password \
+    FOUNDRY_MODEL="<value>" \
+    AZURE_OPENAI_ENDPOINT="<value>" \
+    AZURE_OPENAI_API_KEY=secretref:openai-key
+```
+
+Azure SQL must allow the container's outbound traffic: on the SQL server's **Networking** blade,
+either enable "Allow Azure services and resources to access this server," or add the Container
+App's outbound IPs individually for tighter scoping.
+
 ## Typical agent execution
 
 For “Which five products generated the most profit in Florida this quarter?” the model should:
