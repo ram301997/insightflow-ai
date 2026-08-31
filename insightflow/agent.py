@@ -1,11 +1,12 @@
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal, Optional
 
 from langchain.agents import create_agent
 from langchain_azure_ai.chat_models import AzureAIChatCompletionsModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.tools import tool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from mcp import ClientSession
 from mcp.client.stdio import stdio_client
@@ -32,6 +33,10 @@ Operating rules:
 - Never invent a table, column, join, filter, metric, or result.
 - Write one T-SQL SELECT or WITH query and run it with execute_readonly_query. Prefer explicit joins,
   qualified column names, and deterministic ordering (ORDER BY / TOP) so results are reproducible.
+- After a query that returns a worthwhile result, call suggest_visualization exactly once, choosing
+  the chart type from what the question is actually asking (a trend over time vs. comparing
+  categories vs. a single headline number) rather than just the data's shape. Skip it if the result
+  is empty or a chart wouldn't clarify anything.
 - State the time range and filters used. Distinguish revenue, profit, orders, units, and customers.
 - If the database cannot answer the question, say what is missing instead of guessing.
 - Answer in plain text: a concise executive answer first, then key supporting numbers and any caveat.
@@ -47,6 +52,28 @@ class AgentAnswer:
     text: str
     trace: list[dict[str, Any]] = field(default_factory=list)
     rows: list[dict[str, Any]] | None = None
+    chart_spec: dict[str, Any] | None = None
+
+
+@tool
+def suggest_visualization(
+    chart_type: Literal["bar", "line", "metric", "table"],
+    x_column: Optional[str] = None,
+    y_column: Optional[str] = None,
+    title: Optional[str] = None,
+) -> str:
+    """Record how the last query's result should be visualized in the UI.
+
+    Call this exactly once, after execute_readonly_query, whenever the result is worth charting.
+    Choose based on what the question is actually asking, not just the data's shape:
+    - "bar": comparing a metric across categories (products, states, segments, ...).
+    - "line": a trend over time (a monthly/quarterly/yearly series).
+    - "metric": a single headline number (one row, one key figure).
+    - "table": a list of records, or anything a chart wouldn't clarify.
+    x_column and y_column must be exact column names from the query's SELECT list. This tool has no
+    effect on the data itself — it only tells the UI how to render what you already fetched.
+    """
+    return "Visualization noted."
 
 
 def _tool_result_text(result) -> str:
@@ -161,6 +188,17 @@ def _last_query_rows(messages: list[BaseMessage]) -> list[dict[str, Any]] | None
     return rows
 
 
+def _chart_spec_from_messages(messages: list[BaseMessage]) -> dict[str, Any] | None:
+    """Extract the arguments of the agent's suggest_visualization call, if it made one."""
+    spec = None
+    for message in messages:
+        if isinstance(message, AIMessage):
+            for call in message.tool_calls:
+                if call["name"] == "suggest_visualization":
+                    spec = call["args"]
+    return spec
+
+
 async def ask_foundry_agent(question: str, history: list[BaseMessage] | None = None) -> AgentAnswer:
     """LangChain tool-calling agent: Foundry model + MCP-discovered schema and query tools."""
     if not foundry_ready():
@@ -171,7 +209,7 @@ async def ask_foundry_agent(question: str, history: list[BaseMessage] | None = N
         )
 
     mcp_client = MultiServerMCPClient({"insightflow": mcp_stdio_connection()})
-    tools = await mcp_client.get_tools()
+    tools = [*(await mcp_client.get_tools()), suggest_visualization]
     agent = create_agent(model=_build_llm(), tools=tools, system_prompt=AGENT_INSTRUCTIONS)
 
     messages = [*(history or []), HumanMessage(content=question)]
@@ -182,14 +220,19 @@ async def ask_foundry_agent(question: str, history: list[BaseMessage] | None = N
     text = final.content if isinstance(final, AIMessage) else ""
 
     # A prompt instruction alone can be talked around. A fresh, standalone question this agent can
-    # legitimately answer requires at least one MCP tool call — it has no other source of
-    # information. If it answered the opening question of a conversation without ever touching a
-    # tool, it answered from outside/general knowledge, no matter what the text claims; refuse
-    # instead of returning that answer. Scoped to `not history`: a follow-up turn's history only
-    # carries forward plain text (see streamlit_app.py), not the earlier turn's ToolMessages, so
-    # this same check on a follow-up would misfire on a legitimate "explain that number" question
-    # that doesn't need a fresh query.
-    if not history and not any(isinstance(message, ToolMessage) for message in result_messages):
+    # legitimately answer requires at least one *database* tool call — it has no other source of
+    # information. suggest_visualization doesn't count: it touches no data, so a response built from
+    # only that call is exactly as ungrounded as one with no tool calls at all. If it answered the
+    # opening question of a conversation without ever touching the database, it answered from
+    # outside/general knowledge, no matter what the text claims; refuse instead of returning that
+    # answer. Scoped to `not history`: a follow-up turn's history only carries forward plain text
+    # (see streamlit_app.py), not the earlier turn's ToolMessages, so this same check on a follow-up
+    # would misfire on a legitimate "explain that number" question that doesn't need a fresh query.
+    grounded = any(
+        isinstance(message, ToolMessage) and message.name != "suggest_visualization"
+        for message in result_messages
+    )
+    if not history and not grounded:
         text = (
             "I can only answer questions about the data in this database — I don't have access to "
             "general knowledge or anything outside it. Try asking about revenue, profit, products, "
@@ -200,4 +243,5 @@ async def ask_foundry_agent(question: str, history: list[BaseMessage] | None = N
         text=text or "No textual answer was returned.",
         trace=_trace_from_messages(result_messages),
         rows=_last_query_rows(result_messages),
+        chart_spec=_chart_spec_from_messages(result_messages),
     )

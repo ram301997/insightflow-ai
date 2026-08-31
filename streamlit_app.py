@@ -232,21 +232,77 @@ def _is_id_column(name: str) -> bool:
     return lowered == "id" or lowered.endswith("id")
 
 
-def render_result_view(rows: list[dict] | None) -> None:
-    """Render the last query's result set as a KPI row, a ranking/trend chart, or a table."""
+CHART_TYPES = {"bar", "line", "metric", "table"}
+
+
+def _render_metric_row(df: pd.DataFrame, numeric_cols: list[str]) -> None:
+    metric_cols = st.columns(min(len(numeric_cols), 4))
+    for index, name in enumerate(numeric_cols[:8]):
+        value = df[name].iloc[0]  # per-column access preserves that column's own dtype
+        formatted = f"{value:,.2f}" if pd.api.types.is_float_dtype(df[name]) else f"{value:,}"
+        metric_cols[index % len(metric_cols)].metric(name, formatted)
+
+
+def _valid_chart_spec(spec: dict | None, df: pd.DataFrame) -> dict | None:
+    """Trust the agent's own suggest_visualization call only when it's structurally consistent
+    with the actual result — a spec naming a column that isn't there, or "metric" on a multi-row
+    result, falls back to the shape heuristic instead of erroring or rendering nothing."""
+    if not spec or spec.get("chart_type") not in CHART_TYPES:
+        return None
+    chart_type = spec["chart_type"]
+    if chart_type in ("bar", "line"):
+        x_column, y_column = spec.get("x_column"), spec.get("y_column")
+        if x_column not in df.columns or y_column not in df.columns:
+            return None
+        if not pd.api.types.is_numeric_dtype(df[y_column]):
+            return None
+    elif chart_type == "metric":
+        numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and not _is_id_column(c)]
+        if len(df) != 1 or not numeric_cols:
+            return None
+    return spec
+
+
+def render_result_view(rows: list[dict] | None, chart_spec: dict | None = None) -> None:
+    """Render the last query's result as a KPI row, a chart, or a table.
+
+    Prefers the agent's own suggest_visualization call — grounded in what the question actually
+    asked, not just the data's shape — when it's consistent with the real result; falls back to a
+    shape-based heuristic otherwise (no chart_spec, or the agent skipped the call).
+    """
     if not rows:
         return
     df = pd.DataFrame(rows)
+    spec = _valid_chart_spec(chart_spec, df)
+
+    if spec:
+        chart_type = spec["chart_type"]
+        if chart_type == "metric":
+            numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c]) and not _is_id_column(c)]
+            _render_metric_row(df, numeric_cols)
+            with st.expander("Result data"):
+                st.dataframe(df, width="stretch", hide_index=True)
+        elif chart_type == "table":
+            st.dataframe(df, width="stretch", hide_index=True)
+        else:
+            x_column, y_column = spec["x_column"], spec["y_column"]
+            if chart_type == "line":
+                st.line_chart(df.sort_values(x_column), x=x_column, y=y_column, color=CHART_COLOR)
+            else:
+                st.bar_chart(
+                    df.sort_values(y_column), x=x_column, y=y_column,
+                    color=CHART_COLOR, horizontal=True, sort=False,
+                )
+            with st.expander("Result data"):
+                st.dataframe(df, width="stretch", hide_index=True)
+        return
+
     chartable = [c for c in df.columns if not _is_id_column(c)]
     numeric_cols = [c for c in chartable if pd.api.types.is_numeric_dtype(df[c])]
     other_cols = [c for c in chartable if c not in numeric_cols]
 
     if len(df) == 1 and numeric_cols:
-        metric_cols = st.columns(min(len(numeric_cols), 4))
-        for index, name in enumerate(numeric_cols[:8]):
-            value = df[name].iloc[0]  # per-column access preserves that column's own dtype
-            formatted = f"{value:,.2f}" if pd.api.types.is_float_dtype(df[name]) else f"{value:,}"
-            metric_cols[index % len(metric_cols)].metric(name, formatted)
+        _render_metric_row(df, numeric_cols)
         with st.expander("Result data"):
             st.dataframe(df, width="stretch", hide_index=True)
     elif len(other_cols) == 1 and len(numeric_cols) == 1 and 1 < len(df) <= MAX_CHART_ROWS:
@@ -389,9 +445,9 @@ with tab_chat:
     for index, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
-            render_result_view(message.get("rows"))
+            render_result_view(message.get("rows"), message.get("chart_spec"))
             if message.get("trace"):
-                with st.expander(f"MCP activity ({len(message['trace'])} calls)"):
+                with st.expander(f"Agent activity ({len(message['trace'])} calls)"):
                     for call_index, call in enumerate(message["trace"], start=1):
                         st.markdown(f"**{call_index}. `{call['tool']}`**")
                         st.code(json.dumps(call["arguments"], indent=2), language="json")
@@ -451,15 +507,18 @@ with tab_chat:
 
             if answer is not None:
                 st.markdown(answer.text)
-                render_result_view(answer.rows)
+                render_result_view(answer.rows, answer.chart_spec)
                 if answer.trace:
-                    with st.expander(f"MCP activity ({len(answer.trace)} calls)"):
+                    with st.expander(f"Agent activity ({len(answer.trace)} calls)"):
                         for index, call in enumerate(answer.trace, start=1):
                             st.markdown(f"**{index}. `{call['tool']}`**")
                             st.code(json.dumps(call["arguments"], indent=2), language="json")
                             st.code(call["result"], language="json")
                 st.session_state.messages.append(
-                    {"role": "assistant", "content": answer.text, "trace": answer.trace, "rows": answer.rows}
+                    {
+                        "role": "assistant", "content": answer.text, "trace": answer.trace,
+                        "rows": answer.rows, "chart_spec": answer.chart_spec,
+                    }
                 )
             else:
                 st.error(error_message)
