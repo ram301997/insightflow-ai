@@ -24,7 +24,10 @@ def _base_connection_string() -> str:
         "Driver={ODBC Driver 18 for SQL Server};"
         f"Server=tcp:{os.environ['AZURE_SQL_SERVER']},1433;"
         f"Database={os.environ['AZURE_SQL_DATABASE']};"
-        "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=15;LongAsMax=Yes;"
+        # 30s, not 15s: a Serverless-tier database that auto-paused needs time to resume on the
+        # first connection after idling — a short timeout can cut that off mid-resume and surface
+        # as an intermittent "SQL connection unavailable" error that clears itself moments later.
+        "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;LongAsMax=Yes;"
     )
 
 
