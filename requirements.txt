@@ -5,6 +5,7 @@ langchain-azure-ai>=1.2,<2
 langchain-core>=1.6,<2
 langchain-mcp-adapters>=0.3,<0.4
 langchain-openai>=1.6,<2
+matplotlib>=3.9,<4
 mcp[cli]>=1.27,<2
 openai>=2,<4
 pandas>=2.2,<3

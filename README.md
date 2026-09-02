@@ -39,6 +39,29 @@ The model has no database credentials and cannot connect directly to SQL. The ag
 | `get_relationships` | Return foreign-key relationships. |
 | `sample_rows` | Return at most 20 rows from a validated table name. |
 | `execute_readonly_query` | Execute one SQLGlot-validated SELECT/WITH query with a 30-second timeout and 500-row cap. |
+| `render_chart` | Re-run a validated query and execute agent-written matplotlib code against the real result, returning a PNG. See "Chart rendering" below. |
+
+## Chart rendering
+
+The agent doesn't pick from a fixed set of chart types — it writes real Python (matplotlib) plotting
+code against the actual query result and that code is executed to produce the image, so the chart
+can never diverge from the real numbers the way an image-generation model's guess could.
+
+Running LLM-written code is a real attack surface (this app is driven by chat input), so
+`insightflow/chart_sandbox.py` layers three independent controls, each one closing a different
+escape route:
+1. **AST denylist** (`validate_chart_code`) — rejects `import`, `exec`/`eval`/`open`/`compile`,
+   function/class/lambda definitions, and any dunder attribute access before execution is even
+   attempted.
+2. **Restricted execution namespace** — the code runs with only `pd`, `plt`, and the real `df`
+   available, and a `__builtins__` reduced to a small safe allowlist (no `__import__`, no `open`).
+3. **Process isolation** — execution happens in a subprocess launched with an *empty environment*
+   (`env={}`) and a hard timeout, so even a full sandbox escape (a known hard problem for pure
+   in-process Python restriction) inherits no Azure SQL/Foundry credentials to steal and can't hang
+   the app indefinitely.
+
+None of these layers is airtight alone — this is defense in depth, the same principle behind the SQL
+guard above, not a claim of a hermetic sandbox.
 
 ## Security model
 
@@ -61,10 +84,12 @@ streamlit_app.py             Streamlit chat, readiness UI, and database explorer
 insightflow/agent.py         LangChain tool-calling agent (Foundry model + MCP tools)
 insightflow/mcp_server.py    MCP server: schema discovery and guarded SQL execution
 insightflow/sql.py           connection, serialization, and SQL guardrails
+insightflow/chart_sandbox.py sandboxed execution of agent-written chart code
 insightflow/config.py        environment loading and MCP subprocess/stdio config
 database/schema.sql          Azure SQL star schema
 database/seed.sql            deterministic sample data
 tests/test_sql_guard.py      SQL safety tests
+tests/test_chart_sandbox.py  chart-code sandbox tests
 ```
 
 ## Layout

@@ -1,8 +1,10 @@
+import base64
 import json
 from functools import wraps
 
 from mcp.server.fastmcp import FastMCP
 
+from insightflow.chart_sandbox import render_chart_image
 from insightflow.sql import (
     MAX_ROWS,
     QUERY_TIMEOUT_SECONDS,
@@ -45,7 +47,10 @@ def safe_tool(function):
             lowered = message.lower()
             if "backend service identity" in lowered or "defaultazurecredential" in lowered:
                 message = "Backend service identity is not configured; interactive sign-in is disabled."
-            elif "odbc driver 18" in lowered or "data source name not found" in lowered:
+            elif "data source name not found" in lowered or "im002" in lowered:
+                # Only the true missing-driver signature — every pyodbc error from this driver is
+                # prefixed "[Microsoft][ODBC Driver 18 for SQL Server]", so matching that substring
+                # alone mislabels real connection failures (timeout, auth, network) as "not installed".
                 message = "Microsoft ODBC Driver 18 for SQL Server is not installed or registered."
             return json.dumps({"error": message, "data": []})
     return wrapper
@@ -185,6 +190,34 @@ def execute_readonly_query(query: str) -> str:
             raise ValueError("The query did not return a result set")
         rows, truncated = rows_as_dicts(cursor, MAX_ROWS)
     return _result(rows, count=len(rows), truncated=truncated, maxRows=MAX_ROWS)
+
+
+@mcp.tool()
+@safe_tool
+def render_chart(query: str, code: str) -> str:
+    """Run a validated read-only query and render a matplotlib chart of its result as a PNG image.
+
+    `query` is validated and executed exactly like execute_readonly_query — the same read-only,
+    column-restriction, and row-cap rules apply, and it runs independently of any earlier query in
+    this conversation (write the full query here, don't assume prior context).
+
+    `code` is plain Python plotting code, executed in an isolated environment with only `pd`
+    (pandas) and `plt` (matplotlib.pyplot) available and a DataFrame named `df` already holding the
+    query's real rows. Do not redefine df. Do not import anything — pd and plt are already provided.
+    Assign the finished chart to a variable named `fig` (e.g. `fig, ax = plt.subplots()`). No file
+    or network access is available.
+    """
+    validated_query = validate_readonly_sql(query)
+    with connect() as connection:
+        cursor = _cursor(connection)
+        cursor.execute(validated_query)
+        if cursor.description is None:
+            raise ValueError("The query did not return a result set")
+        rows, _ = rows_as_dicts(cursor, MAX_ROWS)
+    if not rows:
+        raise ValueError("The query returned no rows — nothing to chart")
+    image_bytes = render_chart_image(rows, code)
+    return _result(None, count=len(rows), image_base64=base64.b64encode(image_bytes).decode("ascii"))
 
 
 if __name__ == "__main__":
