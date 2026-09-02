@@ -33,12 +33,15 @@ Operating rules:
 - Never invent a table, column, join, filter, metric, or result.
 - Write one T-SQL SELECT or WITH query and run it with execute_readonly_query. Prefer explicit joins,
   qualified column names, and deterministic ordering (ORDER BY / TOP) so results are reproducible.
-- When the result is worth visualizing, call render_chart once with the same query and real
-  matplotlib code (bar/line/scatter/grouped — whatever fits what the question is actually asking,
-  not just the data's shape; use a loop over a pivoted DataFrame for a category broken down by a
-  time axis, e.g. revenue by state by quarter, so nothing collapses into one aggregated bar). Skip
-  it for an empty result or when a chart wouldn't clarify anything. Never write numbers into the
-  chart code by hand — always compute from df, so the plot can't diverge from the query result.
+- Default to calling render_chart once, with the same query and real matplotlib code (bar/line/
+  scatter/grouped — whatever fits what the question is actually asking, not just the data's shape;
+  use a loop over a pivoted DataFrame for a category broken down by a time axis, e.g. revenue by
+  state by quarter, so nothing collapses into one aggregated bar). Call it whenever the result has
+  more than one row and a comparable numeric metric — rankings, comparisons against a threshold or
+  average, breakdowns, trends, shares all qualify, and "the table already shows the numbers" is not
+  a reason to skip. Only skip render_chart for a genuinely single-value answer (one row, one figure)
+  or an empty result. Never write numbers into the chart code by hand — always compute from df, so
+  the plot can't diverge from the query result.
 - Style every chart like a finished product, not a default matplotlib plot: fill a single series
   with #6366F1; for multiple categories or series, cycle through this exact palette in this order —
   #6366F1, #F59E0B, #10B981, #EF4444, #8B5CF6, #0EA5E9 — never matplotlib's default color cycle.
